@@ -2,7 +2,7 @@ admin:
   address:
     socket_address:
       protocol: TCP
-      address: 127.0.0.1
+      address: 0.0.0.0
       port_value: 9901
 static_resources:
   listeners:
@@ -102,3 +102,17 @@ static_resources:
         common_tls_context:
           validation_context:
             trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}
+  - name: httpbin
+    connect_timeout: 5s
+    type: strict_dns
+    lb_policy: round_robin
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: httpbin
+      endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: httpbin.org
+                  port_value: 80
