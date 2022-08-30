@@ -7,4 +7,5 @@ services:
       - "9901:9901"
     volumes:
       - ./pkg/envoy_filter_playground_bg.wasm:/etc/filter.wasm
+      - ./pkg/envoy_service_playground_bg.wasm:/etc/service.wasm
       - ./envoy.yaml:/etc/envoy/envoy.yaml
