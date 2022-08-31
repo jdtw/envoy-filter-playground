@@ -39,11 +39,12 @@ impl Context for Filter {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let body = self.get_http_call_response_body(0, body_size);
-        let body = body.as_ref().map(|bs| bs.as_slice());
+        let body = body.as_deref();
         self.send_http_response(200, headers, body)
     }
 }
 
+#[derive(Debug)]
 enum Do {
     Fail,
     Redirect(String),
@@ -51,9 +52,9 @@ enum Do {
     Httpbin(String),
 }
 
-impl fmt::Debug for Do {
+impl fmt::Display for Do {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(
+        write!(
             f,
             "{}",
             match self {
@@ -62,7 +63,7 @@ impl fmt::Debug for Do {
                 Do::Body(_) => "Do.Body",
                 Do::Httpbin(_) => "Do.Httpbin",
             }
-        );
+        )
     }
 }
 
@@ -78,11 +79,10 @@ struct RequestEvent {
 
 impl Filter {
     fn bump_request_ct(&self, action: &Option<Do>) -> u64 {
-        let evt_name = format!("envoy.playground.request_ct.{:?}", action);
-        let queue_id = match self.resolve_shared_queue("my_vm_id", &self.config.channel_name) {
-            Some(qid) => qid,
-            None => panic!("could not resolve queue"),
-        };
+        let evt_name = get_key(action);
+        let queue_id = self.resolve_shared_queue("my_vm_id", &self.config.channel_name).expect(
+            "could not resolve queue"
+        );
 
         let (stored, _) = self.get_shared_data(&evt_name);
         let mut new_val = RequestCount { request_count: 1 };
@@ -97,19 +97,25 @@ impl Filter {
             request_key: evt_name,
         };
 
-        let serialized = match serde_json::to_string(&evt) {
-            Ok(s) => s,
-            Err(_) => panic!("couldn't serialize request event"),
-        };
+        let serialized = serde_json::to_string(&evt).expect(
+            "couldn't serialize request event"
+        );
 
-        if let Ok(_) = self.enqueue_shared_queue(queue_id, Some(serialized.as_bytes())) {
-            info!("sent request event to service");
-        } else {
-            panic!("failed to send request event to service");
-        }
+        self.enqueue_shared_queue(queue_id, Some(serialized.as_bytes())).expect(
+            "failed to send request event to service"
+        );
+        info!("sent request event to service");
 
-        return new_val.request_count;
+        new_val.request_count
     }
+}
+
+fn get_key(req_action: &Option<Do>) -> String {
+    let evt_suffix = match req_action{
+        Some(act) => format!("{}", act),
+        None => "GenericRequest".to_string()
+    };
+    format!("envoy.playground.request_ct.{}", evt_suffix)
 }
 
 impl HttpContext for Filter {
@@ -133,7 +139,7 @@ impl HttpContext for Filter {
         }
 
         let req_ct = self.bump_request_ct(&action);
-        info!("REQUEST CT VALUE for {:?}: {}", action, req_ct);
+        info!("REQUEST CT VALUE for {}: {}", get_key(&action), req_ct);
 
         // Take an action based on the request headers...
         match action {
