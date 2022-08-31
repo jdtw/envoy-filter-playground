@@ -3,6 +3,7 @@ use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 proxy_wasm::main! {{
@@ -13,6 +14,7 @@ proxy_wasm::main! {{
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 struct Config {
     headers: HashMap<String, String>,
+    channel_name: String,
 }
 
 struct Filter {
@@ -37,16 +39,83 @@ impl Context for Filter {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let body = self.get_http_call_response_body(0, body_size);
-        let body = body.as_ref().map(|bs| bs.as_slice());
+        let body = body.as_deref();
         self.send_http_response(200, headers, body)
     }
 }
 
+#[derive(Debug)]
 enum Do {
     Fail,
     Redirect(String),
     Body(String),
     Httpbin(String),
+}
+
+impl fmt::Display for Do {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Do::Fail => "Do.Fail",
+                Do::Redirect(_) => "Do.Redirect",
+                Do::Body(_) => "Do.Body",
+                Do::Httpbin(_) => "Do.Httpbin",
+            }
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+struct RequestCount {
+    request_count: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+struct RequestEvent {
+    request_key: String,
+}
+
+impl Filter {
+    fn bump_request_ct(&self, action: &Option<Do>) -> u64 {
+        let evt_name = get_key(action);
+        let queue_id = self.resolve_shared_queue("my_vm_id", &self.config.channel_name).expect(
+            "could not resolve queue"
+        );
+
+        let (stored, _) = self.get_shared_data(&evt_name);
+        let mut new_val = RequestCount { request_count: 1 };
+        if let Some(val) = stored {
+            if !val.is_empty() {
+                new_val = serde_json::from_slice(&val).expect("invalid JSON");
+                new_val.request_count += 1;
+            }
+        };
+
+        let evt = RequestEvent {
+            request_key: evt_name,
+        };
+
+        let serialized = serde_json::to_string(&evt).expect(
+            "couldn't serialize request event"
+        );
+
+        self.enqueue_shared_queue(queue_id, Some(serialized.as_bytes())).expect(
+            "failed to send request event to service"
+        );
+        info!("sent request event to service");
+
+        new_val.request_count
+    }
+}
+
+fn get_key(req_action: &Option<Do>) -> String {
+    let evt_suffix = match req_action{
+        Some(act) => format!("{}", act),
+        None => "GenericRequest".to_string()
+    };
+    format!("envoy.playground.request_ct.{}", evt_suffix)
 }
 
 impl HttpContext for Filter {
@@ -68,6 +137,9 @@ impl HttpContext for Filter {
                 _ => (),
             }
         }
+
+        let req_ct = self.bump_request_ct(&action);
+        info!("REQUEST CT VALUE for {}: {}", get_key(&action), req_ct);
 
         // Take an action based on the request headers...
         match action {
